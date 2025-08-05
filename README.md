@@ -22,5 +22,4 @@ Do try it out though, and raise issues for any feedback.
 
 Download the release, put the directory somewhere and make sure it's in your $PATH.
 
-If you prefer to build it yourself, just `swift build -c release --arch arm64 --arch x86_64`
-then copy the `xcede-dap` executable into the bin directory (it needs to be in the same location as the scripts).
+If you prefer to build it yourself, run `build.sh`.

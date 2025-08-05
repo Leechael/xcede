@@ -1,0 +1,305 @@
+#!/bin/bash
+set -e
+set -o pipefail
+
+function main {
+    op=$1
+
+    [ -e .xcrc ] && . .xcrc
+    [ -e .zed/xcrc ] && . .zed/xcrc
+
+    scheme=${2:-$scheme}
+    platform=${3:-$platform}
+    device=${4:-$device}\
+
+    if [[ $op = "" || $op = help || $op = --help ]]; then
+        cat <<END
+Usage:
+xcede build|buildrun|run [device|sim|mac [deviceName]]
+
+Parameters can provided in .xcrc or .zed/xcrc which will be sourced as bash, eg:
+scheme="My Scheme"; platform=device; device="Tarquin's iPhone 99"
+
+Additional environment variables XCODEBUILD_BEAUTIFIER and XCODEBUILD_FLAGS can
+be supplied.
+
+END
+        exit 0
+    fi
+
+    need op
+
+    # For convenience, support packages in a basic way
+    if [[ -z $scheme ]]; then
+        echo "Swift package mode (since no scheme)"
+        case $op in
+            build)
+                swift build
+                ;;
+            buildrun)
+                swift run
+                ;;
+            run)
+                swift run --skip-build
+                ;;
+        esac
+        exit 0
+    fi
+
+    need scheme
+    need platform
+
+    case "$platform" in
+        sim)
+            findSimulator
+            ;;
+        device)
+            findDevice
+            ;;
+        mac)
+            ;;
+        *)
+            die "bad platform: $platform"
+    esac
+
+    if [[ $op = build || $op = buildrun ]]; then
+        build
+    fi
+
+    if [[ $op = run || $op = buildrun || $op = _debug ]]; then
+        run
+    fi
+}
+
+function build {
+    echo Building $scheme...
+
+    doXcodeBuild true
+
+    exitCode=$?
+    if [[ $exitCode != 0 ]]; then
+        echo Build failed: $exitCode
+        exit $exitCode
+    fi
+}
+
+function doXcodeBuild {
+    beautify=$1
+    shift
+
+    if [[ $beautify = "true" ]]; then
+        beautifier="$XCODEBUILD_BEAUTIFIER"
+        if [[ -z $beautifier ]]; then
+            if which xcbeautify > /dev/null; then
+                beautifier="xcbeautify --disable-logging"
+            else
+                beautifier=cat
+            fi
+        fi
+    else
+        beautifier=cat
+    fi
+
+    case "$platform" in
+        sim)
+            xcodebuild $XCODEBUILD_FLAGS -scheme "$scheme" -destination "platform=iOS Simulator,id=$simId" "$@" | $beautifier
+            ;;
+        device)
+            xcodebuild $XCODEBUILD_FLAGS -scheme "$scheme" -destination "platform=iOS,id=$deviceId" "$@" | $beautifier
+            ;;
+        mac)
+            xcodebuild $XCODEBUILD_FLAGS -scheme "$scheme" -destination 'platform=macOS' "$@" | $beautifier
+            ;;
+    esac
+}
+
+function run {
+    case "$platform" in
+        sim)
+            runOnSim
+            ;;
+        device)
+            runOnDevice
+            ;;
+        mac)
+            runOnMac
+            ;;
+    esac
+}
+
+function runOnDevice {
+    needAppPath
+    extractBundleId "$appPath"
+
+    killAndRememberDapProcess "$deviceId"
+
+    echo "Installing app"
+    xcrun devicectl device install app --device $deviceId  $appPath
+
+    echo "Launching app"
+    appName=${appPath##*/}
+    processName=${appName%.*}
+    echo "xcede:device:$device:$processName"
+
+    if [[ $op = _debug ]]; then
+        extras=--start-stopped
+    else
+        extras=
+    fi
+    xcrun devicectl device process launch --terminate-existing --console --verbose $extras --device $deviceId $bundleId
+}
+
+function runOnMac {
+    needAppPath
+    if [[ $op = _debug ]]; then
+        echo "xcede:mac:$appPath"
+    else
+        "$BUILT_PRODUCTS_DIR/$EXECUTABLE_PATH"
+    fi
+}
+
+function runOnSim {
+    # Starting point for this code was https://gist.github.com/jerrymarino/1f9eb6a06c423f9744ea297d80193a9b
+    needAppPath
+    app=$(basename $appPath)
+    app=${app%.app}
+    extractBundleId "$appPath"
+
+    killAndRememberDapProcess "$simId"
+
+    echo "Opening simulator"
+    open -a 'Simulator' --args -CurrentDeviceUDID $simId
+
+    while true; do
+        booted=$(xcrun simctl list | grep Booted || true)
+        if [[ ! -z "$booted" ]]; then
+            break
+        fi
+    	sleep 1
+    done
+
+    if ! grep -qF "$simId" <<< "$booted"; then
+        xcrun simctl boot $simId
+    fi
+
+    echo "Installing app"
+    xcrun simctl install $simId $appPath
+
+    echo "Launching app"
+
+    if [[ $op = _debug ]]; then
+    	waitFlag=--wait-for-debugger
+    else
+    	waitFlag=""
+    fi
+
+    logFile=/tmp/xcede_sim.$$.log
+
+    # don't know what the difference is between this and --console, but the latter was freezing up
+    `xcrun simctl launch --terminate-running-process $waitFlag --console-pty $simId $bundleId 2>&1 > $logFile` &
+
+    LAUNCH_SHELL_PID=$!
+
+    # Wait for the process to launch. We need to get the PID of the launched App
+    function newest_related_process() {
+    	echo `ps aux | grep $app.app/$app | grep -v -e "*.grep" | sort -k 4nr,4  | awk '{ print ( $2 > '$LAUNCH_SHELL_PID' ) ? $2 : "" }' | grep -v -e '^$' | head -1`
+    }
+    _Z=`newest_related_process`
+    _X=0
+    while [[ "$_Z" != "$_X" ]]; do
+    	sleep 1
+    	_Z=$_X
+    	_X=`newest_related_process`
+    	echo "waiting for process.."
+    done
+    APP_PID=$_X
+
+    echo "xcede:sim:$APP_PID"
+
+   	echo "-------------------- $app running at pid $APP_PID ----------------------"
+   	tail -1000f $logFile
+}
+
+function killAndRememberDapProcess {
+    # Kill the previous debugger connected to this device - it will prevent app installation and
+    # generally cause chaos. Zed doesn't kill an existing debug session when you start a new one,
+    # and besides we'd still need this for a run following a debug.
+    pidFile=".xcede/${1}.dappid"
+    [[ -f $pidFile ]] && { kill $(cat $pidFile) || true; }
+    # And remember the new xcede-dap pid if we're debugging.
+    if [[ $op = _debug ]]; then
+        echo $PPID > $pidFile
+    fi
+}
+
+function extractBundleId {
+    bundleId=$(defaults read "$1/Info.plist" CFBundleIdentifier)
+}
+
+# Looks up the device name in $device and sets $deviceId.
+# There are two kinds of id! The one we return here is produced by "xctrace list devices"
+# and works with devicectl.
+# (The other one is what you get from lldb's "device list".)
+function findDevice {
+    need device
+    echo "Finding $device"
+
+    # Cache because name lookup takes 1.5s
+    cacheFile=/tmp/xcede-device-id-cache
+    [[ ! -f $cacheFile ]] && touch $cacheFile
+    deviceId=$(egrep "^$device=" $cacheFile | cut -f2 -d=) || true
+    if [[ -z $deviceId ]]; then
+        deviceId=$(xcrun xctrace list devices | egrep "^$device" | cut -f3 -w | sed 's/[()]//g')
+        if [[ -z $deviceId ]]; then
+            echo "device $device not found"
+            exit 1
+        fi
+        echo "$device=$deviceId" >> $cacheFile
+    fi
+}
+
+function findSimulator {
+    need device
+    echo "Finding simulator $device"
+
+    simId=$(xcrun simctl list devices | egrep "^ *$device \(" | grep -v unavailable | sed 's/.*(\(.*\)).*(.*/\1/')
+    if [[ -z $simId ]]; then
+        echo "Can't find simulator: $device"
+        exit 1
+    fi
+}
+
+function getBuildInfo {
+    echo "Getting build info"
+    dir=.xcede
+    mkdir -p $dir
+    file="$dir/${scheme}_${platform}.info"
+    [[ -e "$file" ]] && . "$file"
+    if [[ -z $BUILT_PRODUCTS_DIR ]]; then
+        doXcodeBuild false -showBuildSettings | sed 's/^  *//' | egrep '^(BUILT_PRODUCTS_DIR|FULL_PRODUCT_NAME|EXECUTABLE_PATH) = ' | sed 's/ = /="/' | sed 's/$/"/' > "$file"
+        . "$file"
+    fi
+    need BUILT_PRODUCTS_DIR
+}
+
+function needAppPath {
+    getBuildInfo
+    appPath="$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME"
+    if [[ ! -d $appPath ]]; then
+        echo "can't find app; got: $appPath"
+       exit 1
+   fi
+}
+
+function need {
+    if [[ -z "${!1}" ]]; then
+        die "Missing $1"
+    fi
+}
+
+function die {
+    echo "$1" >&2
+    exit 1
+}
+
+main "$@"

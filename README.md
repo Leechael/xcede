@@ -25,7 +25,7 @@ Do try it out, and raise issues for any feedback.
 
 ## Installation
 
-- download the latest release
+- download the latest release (or clone the repo)
 - run `build.sh`
 - put the `xcede` directory in your location of choice
 - add the directory to your $PATH.

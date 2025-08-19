@@ -237,24 +237,19 @@ function extractBundleId {
 }
 
 # Looks up the device name in $device and sets $deviceId.
-# There are two kinds of id! The one we return here is produced by "xctrace list devices"
-# and works with devicectl.
-# (The other one is what you get from lldb's "device list".)
+#
+# Note the udid, which we select here, is different from the "identifier" (a UUID). devicectl wants the udid.
+# Note there's a *lot* of info in the json; some might be useful for future filtering.
 function findDevice {
     need device
     echo "Finding $device"
 
-    # Cache because name lookup takes 1.5s
-    cacheFile=/tmp/xcede-device-id-cache
-    [[ ! -f $cacheFile ]] && touch $cacheFile
-    deviceId=$(egrep "^$device=" $cacheFile | cut -f2 -d=) || true
+    # Previously there was caching here because we were using "xctrace list devices" which is slow.
+    # "devicectl list devices" seems much faster.
+    deviceId=$(xcrun devicectl list devices -q --json-output - | jq -r ".result.devices[] | select(.deviceProperties.name == \"$device\") | .hardwareProperties.udid" | sort | head -1)
     if [[ -z $deviceId ]]; then
-        deviceId=$(xcrun xctrace list devices | egrep "^$device" | cut -f3 -w | sed 's/[()]//g')
-        if [[ -z $deviceId ]]; then
-            echo "device $device not found"
-            exit 1
-        fi
-        echo "$device=$deviceId" >> $cacheFile
+        echo "device $device not found"
+        exit 1
     fi
 }
 
@@ -262,7 +257,8 @@ function findSimulator {
     need device
     echo "Finding simulator $device"
 
-    simId=$(xcrun simctl list devices | egrep "^ *$device \(" | grep -v unavailable | sed 's/.*(\(.*\)).*(.*/\1/')
+    # Exact match on simulator name, filtering by available devices. In the case of multiple, return the id that sorts first (so at least it's deterministic).
+    simId=$(xcrun simctl list devices -j | jq -r ".devices | to_entries[] | .value[] | select(.name == \"$device\" and .isAvailable == true ) | .udid" | sort | head -1)
     if [[ -z $simId ]]; then
         echo "Can't find simulator: $device"
         exit 1

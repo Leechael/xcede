@@ -99,7 +99,8 @@ class DapWrapMain {
                     }
                 }
                 
-                // Progress start and end events. Zed doesn't display these, but they can be very useful (e.g. "Preparing device support")
+                // Progress start and end events. Zed doesn't display these, but they can be very useful (e.g. "Preparing device support"),
+                // so copy to stdout.
                 else if json["event"].string == "progressStart", let title = json["body"]["title"].string, let progressId = json["body"]["progressId"].string {
                     progressMessageTitles[progressId] = title
                     try stdoutWriter.writeMessage(encodable: OutputMessage(body: StdoutMessage(output: "Starting: \(title)")))

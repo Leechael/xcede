@@ -221,11 +221,11 @@ function runOnSim {
 }
 
 function killAndRememberDapProcess {
-    # Kill the previous debugger connected to this device - it will prevent app installation and
+    # Kill the process tree of the previous debugger connected to this device - it will prevent app installation and
     # generally cause chaos. Zed doesn't kill an existing debug session when you start a new one,
     # and besides we'd still need this for a run following a debug.
     pidFile=".xcede/${1}.dappid"
-    [[ -f $pidFile ]] && { kill $(cat $pidFile) || true; }
+    [[ -f $pidFile ]] && { kill -term -$(cat $pidFile) || true; }
     # And remember the new xcede-dap pid if we're debugging.
     if [[ $op = _debug ]]; then
         echo $PPID > $pidFile

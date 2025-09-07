@@ -134,7 +134,7 @@ function runOnDevice {
     killAndRememberDapProcess "$deviceId"
 
     echo "Installing app"
-    xcrun devicectl device install app --device $deviceId  $appPath
+    xcrun devicectl device install app --device $deviceId  "$appPath"
 
     echo "Launching app"
     appName=${appPath##*/}
@@ -183,7 +183,7 @@ function runOnSim {
     fi
 
     echo "Installing app"
-    xcrun simctl install $simId $appPath
+    xcrun simctl install $simId "$appPath"
 
     echo "Launching app"
 

@@ -1,5 +1,9 @@
 # xcede: Build, run and debug Xcode projects outside Xcode
 
+> [!IMPORTANT]  
+> This project was originally hosted on [Codeberg](https://codeberg.org/luxmentis/xcede), and its author
+> is [luxmentis](https://codeberg.org/luxmentis). I forked and fixed it for my own use.
+
 Tools to enable development of iOS and Mac apps in the [Zed editor](https://zed.dev/). In fact it doesn't
 contain anything Zed-specific and might well be useful in other editors.
 
